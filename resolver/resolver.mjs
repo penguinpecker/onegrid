@@ -34,6 +34,9 @@ const CLOCK_OBJECT = '0x6'; // Sui system Clock object (same on all Sui forks)
 const PACKAGE_ID = process.env.PACKAGE_ID || '0xTODO';
 const GRID_OBJECT_ID = process.env.GRID_OBJECT_ID || '0xTODO';
 const ADMIN_CAP_ID = process.env.ADMIN_CAP_ID || '0xTODO';
+const GRID_PACKAGE_ID = process.env.GRID_PACKAGE_ID || '';
+const GRID_TREASURY_CAP_ID = process.env.GRID_TREASURY_CAP_ID || '';
+const GRID_REWARD_AMOUNT = 10_000_000_000;
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY || '';
 
 // ═══════════════════════════════════════════════════════════════
@@ -184,6 +187,32 @@ async function startRound() {
   return executeTransaction(txb, 'start_round');
 }
 
+async function mintGridReward(winnerAddress, roundId) {
+  if (!GRID_PACKAGE_ID || !GRID_TREASURY_CAP_ID) {
+    console.log('[GRID] Skipping mint — GRID config not set');
+    return;
+  }
+  try {
+    const txb = new Transaction();
+    txb.moveCall({
+      target: `${GRID_PACKAGE_ID}::grid_token::mint_reward`,
+      arguments: [
+        txb.object(GRID_TREASURY_CAP_ID),
+        txb.pure.u64(GRID_REWARD_AMOUNT),
+        txb.pure.address(winnerAddress),
+        txb.pure.u64(roundId),
+      ],
+    });
+    txb.setGasBudget(10_000_000);
+    const result = await executeTransaction(txb, 'mint_grid_reward');
+    if (result.success) {
+      console.log(`[GRID] ✅ Minted 10 GRID to ${winnerAddress.slice(0, 10)}... for round #${roundId}`);
+    }
+  } catch (e) {
+    console.error(`[GRID] ❌ Mint failed: ${e.message}`);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Main Loop
 // ═══════════════════════════════════════════════════════════════
@@ -257,7 +286,18 @@ async function tick() {
         await skipEmptyRound();
       } else {
         console.log(`[BOT] Round #${currentRoundId} ended with ${totalPlayers} players — resolving...`);
-        await resolveRound();
+        const resolveResult = await resolveRound();
+        // Mint GRID tokens to winners
+        if (resolveResult.success && resolveResult.events) {
+          for (const ev of resolveResult.events) {
+            if (ev.type.includes('WinningsPaid')) {
+              const winner = ev.parsedJson?.player;
+              if (winner) {
+                await mintGridReward(winner, currentRoundId);
+              }
+            }
+          }
+        }
       }
     }
   } catch (e) {
@@ -283,6 +323,7 @@ async function main() {
   console.log(`  Grid:     ${GRID_OBJECT_ID}`);
   console.log(`  AdminCap: ${ADMIN_CAP_ID}`);
   console.log(`  Poll:     ${POLL_INTERVAL_MS}ms`);
+  console.log(`  GRID:     ${GRID_PACKAGE_ID ? 'Enabled (10 GRID/win)' : 'Disabled'}`);
   console.log('');
 
   // Verify RPC connection
