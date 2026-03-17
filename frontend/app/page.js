@@ -302,23 +302,26 @@ export default function Page() {
         ],
       });
       tx.setGasBudget(10_000_000);
-      tx.setSender(address);
 
-      // Pre-build so wallet receives fully resolved tx (required for OneWallet)
-      await tx.build({ client });
-
-      const result = await signAndExecute({ transaction: tx }, {
-        onSuccess: () => {
-          setMyCell(cellIndex);
-          setCellCounts(prev => { const n = [...prev]; n[cellIndex]++; return n; });
-        },
-      });
+      await signAndExecute(
+        { transaction: tx },
+        {
+          onSuccess: (result) => {
+            console.log("pick_cell success:", result);
+            setMyCell(cellIndex);
+            setCellCounts(prev => { const n = [...prev]; n[cellIndex]++; return n; });
+          },
+          onError: (err) => {
+            console.error("pick_cell tx error:", err);
+          },
+        }
+      );
     } catch (e) {
       console.error("pick_cell error:", e);
       alert("Error: " + e.message);
     }
     setClaiming(false);
-  }, [address, myCell, roundResolved, timeLeft, claiming, signAndExecute, client]);
+  }, [address, myCell, roundResolved, timeLeft, claiming, signAndExecute]);
 
   const phase = roundResolved ? "waiting" : timeLeft <= 0 ? "resolving" : "active";
   const potOCT = (totalPot / 1_000_000_000).toFixed(2);
