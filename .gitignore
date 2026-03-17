@@ -1,0 +1,17 @@
+node_modules/
+.next/
+build/
+dist/
+.env
+.env.local
+.env.production
+.env.*.local
+resolver/.env
+.one/
+contracts/build/
+one
+one-node
+one-cli.tgz
+.DS_Store
+.vercel
+npm-debug.log*

@@ -1,0 +1,13 @@
+{
+  "name": "onegrid-resolver",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node resolver.mjs",
+    "keygen": "node keygen.mjs",
+    "faucet": "node faucet.mjs"
+  },
+  "dependencies": {
+    "@onelabs/sui": "^1.26.2"
+  }
+}
