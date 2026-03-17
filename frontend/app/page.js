@@ -17,11 +17,12 @@ const GRID_OBJECT_ID = "0xd66135557caab54c0ab9e656e61a62f78f33a608c51ef6e26f98b5
 const CLOCK_ID = "0x6";
 const MODULE = `${PACKAGE_ID}::game`;
 const GRID_SIZE = 25;
-const ENTRY_FEE = 100_000_000; // 0.1 OCT in MIST
+const ENTRY_FEE = 100_000_000;
 const POLL_INTERVAL = 3000;
+const EXPLORER_TX = "https://onescan.cc/testnet/transactionBlocksDetail?digest=";
 
 // ═══════════════════════════════════════════════════════════════════
-// THEME — OneChain brand (from media kit)
+// THEME
 // ═══════════════════════════════════════════════════════════════════
 const T = {
   bg: "#030F1C", bgCard: "#091a2e", bgCell: "#0c2240", bgCellHover: "#12305a",
@@ -32,6 +33,33 @@ const T = {
   gradient: "linear-gradient(135deg, #BFC1FF, #467DFF)",
   gradientTeal: "linear-gradient(135deg, #2BDEAC, #1fac88)",
 };
+
+// ═══════════════════════════════════════════════════════════════════
+// LOCAL STORAGE HISTORY
+// ═══════════════════════════════════════════════════════════════════
+const HISTORY_KEY = "onegrid_round_history";
+const MAX_HISTORY = 20;
+
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function saveHistory(history) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, MAX_HISTORY)));
+  } catch {}
+}
+
+function addRoundToHistory(round) {
+  const history = loadHistory();
+  if (history.some(r => r.roundId === round.roundId)) return history;
+  const updated = [round, ...history].slice(0, MAX_HISTORY);
+  saveHistory(updated);
+  return updated;
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // HELPERS
@@ -102,6 +130,40 @@ async function readPlayerCell(client, sender, playerAddress) {
     }
     return null;
   } catch { return null; }
+}
+
+async function fetchRecentEvents(client) {
+  try {
+    const resolved = await client.queryEvents({
+      query: { MoveEventType: `${MODULE}::RoundResolved` },
+      order: "descending",
+      limit: MAX_HISTORY,
+    });
+    const paid = await client.queryEvents({
+      query: { MoveEventType: `${MODULE}::WinningsPaid` },
+      order: "descending",
+      limit: MAX_HISTORY,
+    });
+
+    const rounds = [];
+    for (const ev of resolved.data) {
+      const p = ev.parsedJson;
+      const paidEv = paid.data.find(pe => pe.parsedJson?.round_id === p.round_id);
+      rounds.push({
+        roundId: Number(p.round_id),
+        winningCell: Number(p.winning_cell),
+        totalPot: Number(p.total_pot || 0),
+        winner: paidEv?.parsedJson?.winner || null,
+        payout: Number(paidEv?.parsedJson?.amount || 0),
+        txDigest: ev.id?.txDigest || null,
+        timestamp: ev.timestampMs ? Number(ev.timestampMs) : Date.now(),
+      });
+    }
+    return rounds.sort((a, b) => b.roundId - a.roundId);
+  } catch (e) {
+    console.error("fetchRecentEvents:", e);
+    return [];
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -189,6 +251,34 @@ const Cell = ({ index, players, isMine, isWinner, onClick, disabled }) => {
   );
 };
 
+const HistoryRow = ({ round, myAddress }) => {
+  const isMe = myAddress && round.winner && round.winner.toLowerCase() === myAddress.toLowerCase();
+  const cell = round.winningCell;
+  const pot = (round.totalPot / 1_000_000_000).toFixed(2);
+  const payout = (round.payout / 1_000_000_000).toFixed(2);
+  return (
+    <div style={{
+      display: "grid", gridTemplateColumns: "50px 50px 70px 1fr 30px",
+      alignItems: "center", gap: 6, padding: "8px 0",
+      borderBottom: `1px solid ${T.border}`,
+      fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+    }}>
+      <div style={{ color: T.textDim }}>#{round.roundId}</div>
+      <div style={{ color: T.lavender }}>({Math.floor(cell / 5)},{cell % 5})</div>
+      <div style={{ color: T.teal }}>{payout} OCT</div>
+      <div style={{ color: isMe ? T.teal : T.textMuted, fontWeight: isMe ? 700 : 400 }}>
+        {isMe ? "You won!" : round.winner ? `${round.winner.slice(0, 6)}...${round.winner.slice(-4)}` : "—"}
+      </div>
+      <div>
+        {round.txDigest && (
+          <a href={`${EXPLORER_TX}${round.txDigest}`} target="_blank" rel="noopener"
+            style={{ color: T.blue, textDecoration: "none", fontSize: 10 }}>↗</a>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ═══════════════════════════════════════════════════════════════════
 // MAIN GAME
 // ═══════════════════════════════════════════════════════════════════
@@ -202,7 +292,6 @@ export default function Page() {
   const [funded, setFunded] = useState(false);
   const [claiming, setClaiming] = useState(false);
 
-  // Grid state
   const [roundId, setRoundId] = useState(0);
   const [roundEndMs, setRoundEndMs] = useState(0);
   const [roundResolved, setRoundResolved] = useState(true);
@@ -215,8 +304,35 @@ export default function Page() {
   const [totalRounds, setTotalRounds] = useState(0);
   const [totalVolume, setTotalVolume] = useState(0);
   const [showResult, setShowResult] = useState(false);
+  const [roundHistory, setRoundHistory] = useState([]);
 
   const prevRoundRef = useRef(0);
+
+  // Load history from cache on mount
+  useEffect(() => {
+    setRoundHistory(loadHistory());
+  }, []);
+
+  // Fetch events periodically and update history cache
+  useEffect(() => {
+    const fetchHistory = async () => {
+      const events = await fetchRecentEvents(client);
+      if (events.length > 0) {
+        let history = loadHistory();
+        for (const ev of events) {
+          if (!history.some(r => r.roundId === ev.roundId)) {
+            history = [ev, ...history];
+          }
+        }
+        history = history.sort((a, b) => b.roundId - a.roundId).slice(0, MAX_HISTORY);
+        saveHistory(history);
+        setRoundHistory(history);
+      }
+    };
+    fetchHistory();
+    const interval = setInterval(fetchHistory, 15000);
+    return () => clearInterval(interval);
+  }, [client]);
 
   // Auto-fund on connect
   useEffect(() => {
@@ -285,13 +401,26 @@ export default function Page() {
     return () => clearInterval(interval);
   }, [roundEndMs]);
 
-  // Pick cell via dapp-kit signAndExecuteTransaction
+  // Pick cell
   const handleCellClick = useCallback(async (cellIndex) => {
     if (!address || myCell !== null || roundResolved || timeLeft <= 0 || claiming) return;
     setClaiming(true);
     try {
+      const coins = await client.getCoins({ owner: address, coinType: "0x2::oct::OCT" });
+      if (coins.data.length === 0) {
+        alert("No OCT tokens found. Please use the faucet first.");
+        setClaiming(false);
+        return;
+      }
+
       const tx = new Transaction();
-      const [paymentCoin] = tx.splitCoins(tx.gas, [ENTRY_FEE]);
+      const primaryCoin = coins.data[0].coinObjectId;
+
+      if (coins.data.length > 1 && parseInt(coins.data[0].balance) < ENTRY_FEE + 10_000_000) {
+        tx.mergeCoins(tx.object(primaryCoin), coins.data.slice(1).map(c => tx.object(c.coinObjectId)));
+      }
+
+      const [paymentCoin] = tx.splitCoins(tx.object(primaryCoin), [ENTRY_FEE]);
       tx.moveCall({
         target: `${MODULE}::pick_cell`,
         arguments: [
@@ -301,9 +430,8 @@ export default function Page() {
           tx.object(CLOCK_ID),
         ],
       });
-      tx.setGasBudget(10_000_000);
 
-      await signAndExecute(
+      signAndExecute(
         { transaction: tx },
         {
           onSuccess: (result) => {
@@ -313,6 +441,7 @@ export default function Page() {
           },
           onError: (err) => {
             console.error("pick_cell tx error:", err);
+            alert("Transaction failed: " + (err.message || "Unknown error"));
           },
         }
       );
@@ -321,7 +450,7 @@ export default function Page() {
       alert("Error: " + e.message);
     }
     setClaiming(false);
-  }, [address, myCell, roundResolved, timeLeft, claiming, signAndExecute]);
+  }, [address, myCell, roundResolved, timeLeft, claiming, signAndExecute, client]);
 
   const phase = roundResolved ? "waiting" : timeLeft <= 0 ? "resolving" : "active";
   const potOCT = (totalPot / 1_000_000_000).toFixed(2);
@@ -330,7 +459,6 @@ export default function Page() {
 
   return (
     <div style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: "'DM Sans', -apple-system, sans-serif", position: "relative", overflow: "hidden" }}>
-      {/* Background glow */}
       <div style={{ position: "fixed", top: "-20%", left: "-10%", width: "50%", height: "50%", background: "radial-gradient(circle, rgba(191,193,255,0.08) 0%, transparent 60%)", pointerEvents: "none" }} />
       <div style={{ position: "fixed", bottom: "-20%", right: "-10%", width: "50%", height: "50%", background: "radial-gradient(circle, rgba(70,125,255,0.06) 0%, transparent 60%)", pointerEvents: "none" }} />
 
@@ -424,6 +552,40 @@ export default function Page() {
             <StatPill label="Fee" value="5%" color={T.pink} icon="%" />
           </div>
 
+          {/* Round History */}
+          <div style={{
+            background: T.bgCard, border: `1px solid ${T.border}`, borderRadius: 14, padding: 18, marginBottom: 20,
+            maxHeight: 300, overflowY: "auto",
+          }}>
+            <div style={{ fontSize: 11, color: T.textDim, letterSpacing: "2px", textTransform: "uppercase", marginBottom: 12 }}>
+              Recent Rounds
+            </div>
+            {roundHistory.length === 0 ? (
+              <div style={{ fontSize: 11, color: T.textMuted, textAlign: "center", padding: "16px 0" }}>
+                No resolved rounds yet
+              </div>
+            ) : (
+              <div>
+                {/* Header */}
+                <div style={{
+                  display: "grid", gridTemplateColumns: "50px 50px 70px 1fr 30px",
+                  gap: 6, padding: "4px 0", marginBottom: 4,
+                  fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "1px",
+                }}>
+                  <div>Round</div>
+                  <div>Cell</div>
+                  <div>Payout</div>
+                  <div>Winner</div>
+                  <div>Tx</div>
+                </div>
+                {roundHistory.map(r => (
+                  <HistoryRow key={r.roundId} round={r} myAddress={address} />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* How It Works */}
           <div style={{ background: T.bgCard, border: `1px solid ${T.border}`, borderRadius: 14, padding: 18, marginBottom: 20 }}>
             <div style={{ fontSize: 11, color: T.textDim, letterSpacing: "2px", textTransform: "uppercase", marginBottom: 14 }}>How It Works</div>
             {[
