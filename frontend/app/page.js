@@ -480,25 +480,9 @@ export default function Page() {
     setClaiming(true);
 
     try {
-      // Get coins
-      const coins = await clientRef.current.getCoins({
-        owner: address,
-        coinType: "0x2::oct::OCT",
-      });
-
-      if (coins.data.length === 0) {
-        alert("No OCT coins. Requesting from faucet...");
-        await requestFaucet(address);
-        setClaiming(false);
-        return;
-      }
-
-      // Pick the largest coin
-      const coin = coins.data.sort((a, b) => Number(b.balance) - Number(a.balance))[0];
-
       const tx = new Transaction();
-      // Split exact entry fee from coin
-      const [paymentCoin] = tx.splitCoins(tx.object(coin.coinObjectId), [ENTRY_FEE]);
+      // Split entry fee from gas coin — SDK handles coin selection automatically
+      const [paymentCoin] = tx.splitCoins(tx.gas, [ENTRY_FEE]);
 
       tx.moveCall({
         target: `${MODULE}::pick_cell`,
