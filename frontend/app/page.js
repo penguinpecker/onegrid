@@ -302,6 +302,10 @@ export default function Page() {
         ],
       });
       tx.setGasBudget(10_000_000);
+      tx.setSender(address);
+
+      // Pre-build so wallet receives fully resolved tx (required for OneWallet)
+      await tx.build({ client });
 
       const result = await signAndExecute({ transaction: tx }, {
         onSuccess: () => {
@@ -314,7 +318,7 @@ export default function Page() {
       alert("Error: " + e.message);
     }
     setClaiming(false);
-  }, [address, myCell, roundResolved, timeLeft, claiming, signAndExecute]);
+  }, [address, myCell, roundResolved, timeLeft, claiming, signAndExecute, client]);
 
   const phase = roundResolved ? "waiting" : timeLeft <= 0 ? "resolving" : "active";
   const potOCT = (totalPot / 1_000_000_000).toFixed(2);
