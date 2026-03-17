@@ -153,7 +153,7 @@ async function fetchRecentEvents(client) {
         roundId: Number(p.round_id),
         winningCell: Number(p.winning_cell),
         totalPot: Number(p.total_pot || 0),
-        winner: paidEv?.parsedJson?.winner || null,
+        winner: paidEv?.parsedJson?.player || null,
         payout: Number(paidEv?.parsedJson?.amount || 0),
         txDigest: ev.id?.txDigest || null,
         timestamp: ev.timestampMs ? Number(ev.timestampMs) : Date.now(),
