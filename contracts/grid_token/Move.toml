@@ -1,0 +1,9 @@
+[package]
+name = "grid_token"
+edition = "2024.beta"
+
+[dependencies]
+One = { git = "https://github.com/one-chain-labs/onechain.git", subdir = "crates/sui-framework/packages/one-framework", rev = "onechain-1.0.4" }
+
+[addresses]
+onegrid = "0x0"
