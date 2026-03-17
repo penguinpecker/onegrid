@@ -8,7 +8,9 @@
     "start": "next start"
   },
   "dependencies": {
+    "@onelabs/dapp-kit": "^0.15.6",
     "@onelabs/sui": "^1.26.2",
+    "@tanstack/react-query": "^5.62.0",
     "next": "^15.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
