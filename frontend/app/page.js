@@ -2,50 +2,180 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 // ═══════════════════════════════════════════════════════════════════
-// THEME — OneChain brand palette
+// CONTRACT CONFIG
+// ═══════════════════════════════════════════════════════════════════
+const RPC_URL = "https://rpc-testnet.onelabs.cc:443";
+const FAUCET_URL = "https://faucet-testnet.onelabs.cc:443/gas";
+const PACKAGE_ID = "0x5046a46898293f47c591502e57c1132910e11775ac9eaf39c09b39e0125b7d3e";
+const GRID_OBJECT_ID = "0xd66135557caab54c0ab9e656e61a62f78f33a608c51ef6e26f98b5482e6f897e";
+const CLOCK_ID = "0x6";
+const MODULE = `${PACKAGE_ID}::game`;
+const GRID_SIZE = 25;
+const ENTRY_FEE = 100_000_000; // 0.1 OCT in MIST
+const POLL_INTERVAL = 3000;
+
+// ═══════════════════════════════════════════════════════════════════
+// THEME — OneChain brand palette (from media kit)
 // ═══════════════════════════════════════════════════════════════════
 const T = {
-  // OneChain official brand — from docs.onelabs.cc/MediaMaterial
   bg: "#030F1C",
   bgCard: "#091a2e",
   bgCell: "#0c2240",
   bgCellHover: "#12305a",
-  bgCellClaimed: "#1a3f78",
-  bgCellWin: "#2BDEAC",
-  bgCellMine: "#467DFF",
   border: "#142d50",
   borderActive: "#467DFF",
-  // Brand primaries
-  lavender: "#BFC1FF",    // OneChain primary 1
-  blue: "#467DFF",        // OneChain primary 2
-  blueDark: "#2F2585",    // Dark purple from their palette
-  // Accents from their site CSS
+  lavender: "#BFC1FF",
+  blue: "#467DFF",
+  blueDark: "#2F2585",
   pink: "#FE587B",
   magenta: "#F028FD",
   teal: "#2BDEAC",
   tealDark: "#1fac88",
-  // Text
   text: "#F7F7F8",
   textDim: "#8094b4",
   textMuted: "#3d5a80",
-  // Brand gradients (from media kit radial gradient)
   gradient: "linear-gradient(135deg, #BFC1FF, #467DFF)",
   gradientPink: "linear-gradient(135deg, #FE587B, #F028FD)",
   gradientTeal: "linear-gradient(135deg, #2BDEAC, #1fac88)",
 };
 
 // ═══════════════════════════════════════════════════════════════════
-// MOCK DATA — will be replaced with @onelabs/sui SDK calls
+// SDK — dynamic import to avoid SSR issues
 // ═══════════════════════════════════════════════════════════════════
-const GRID_SIZE = 25;
-const ENTRY_FEE = 0.1; // OCT
-const ROUND_DURATION = 60; // seconds
+let SuiClient, Transaction, Ed25519Keypair, fromBase64, toBase64;
+const sdkReady = (typeof window !== "undefined")
+  ? Promise.all([
+      import("@onelabs/sui/client"),
+      import("@onelabs/sui/transactions"),
+      import("@onelabs/sui/keypairs/ed25519"),
+      import("@onelabs/sui/utils"),
+    ]).then(([clientMod, txMod, kpMod, utilsMod]) => {
+      SuiClient = clientMod.SuiClient;
+      Transaction = txMod.Transaction;
+      Ed25519Keypair = kpMod.Ed25519Keypair;
+      fromBase64 = utilsMod.fromBase64;
+      toBase64 = utilsMod.toBase64;
+    })
+  : Promise.resolve();
 
-const generateMockCells = () => {
-  return Array.from({ length: GRID_SIZE }, () => ({
-    players: Math.random() > 0.6 ? Math.floor(Math.random() * 5) + 1 : 0,
-  }));
-};
+// ═══════════════════════════════════════════════════════════════════
+// WALLET — burner keypair in localStorage
+// ═══════════════════════════════════════════════════════════════════
+function getOrCreateWallet() {
+  const stored = localStorage.getItem("onegrid_wallet");
+  if (stored) {
+    try {
+      const raw = fromBase64(stored);
+      const kp = Ed25519Keypair.fromSecretKey(raw);
+      return kp;
+    } catch (e) {
+      localStorage.removeItem("onegrid_wallet");
+    }
+  }
+  const kp = new Ed25519Keypair();
+  localStorage.setItem("onegrid_wallet", toBase64(kp.getSecretKey()));
+  return kp;
+}
+
+async function requestFaucet(address) {
+  try {
+    const res = await fetch(FAUCET_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ FixedAmountRequest: { recipient: address } }),
+    });
+    const data = await res.json();
+    return !data.error;
+  } catch {
+    return false;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RPC HELPERS
+// ═══════════════════════════════════════════════════════════════════
+async function readGridState(client) {
+  try {
+    const obj = await client.getObject({
+      id: GRID_OBJECT_ID,
+      options: { showContent: true },
+    });
+    const f = obj.data?.content?.fields;
+    if (!f) return null;
+    return {
+      currentRoundId: Number(f.current_round_id),
+      roundStartMs: Number(f.round_start_ms),
+      roundEndMs: Number(f.round_end_ms),
+      roundResolved: f.round_resolved,
+      totalPlayers: Number(f.total_players),
+      poolValue: Number(f.pool),
+      totalRounds: Number(f.total_rounds),
+      totalVolume: Number(f.total_volume),
+      entryFee: Number(f.entry_fee),
+    };
+  } catch (e) {
+    console.error("readGridState error:", e);
+    return null;
+  }
+}
+
+async function readCellCounts(client, sender) {
+  try {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${MODULE}::get_cell_counts`,
+      arguments: [tx.object(GRID_OBJECT_ID)],
+    });
+    const result = await client.devInspectTransactionBlock({
+      transactionBlock: tx,
+      sender,
+    });
+    const returnValues = result?.results?.[0]?.returnValues;
+    if (returnValues && returnValues.length > 0) {
+      const bytes = returnValues[0][0];
+      // BCS decode vector<u64>: first byte is length, then u64 little-endian
+      const arr = new Uint8Array(bytes);
+      const count = arr[0]; // ULEB128 but for 25 it's just 1 byte
+      const counts = [];
+      for (let i = 0; i < count; i++) {
+        let val = 0;
+        for (let b = 0; b < 8; b++) {
+          val += arr[1 + i * 8 + b] * (256 ** b);
+        }
+        counts.push(val);
+      }
+      return counts;
+    }
+    return Array(25).fill(0);
+  } catch (e) {
+    console.error("readCellCounts error:", e);
+    return Array(25).fill(0);
+  }
+}
+
+async function readPlayerCell(client, sender, playerAddress) {
+  try {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${MODULE}::get_player_cell`,
+      arguments: [tx.object(GRID_OBJECT_ID), tx.pure.address(playerAddress)],
+    });
+    const result = await client.devInspectTransactionBlock({
+      transactionBlock: tx,
+      sender,
+    });
+    const returnValues = result?.results?.[0]?.returnValues;
+    if (returnValues && returnValues.length > 0) {
+      const bytes = new Uint8Array(returnValues[0][0]);
+      let val = 0;
+      for (let b = 0; b < 8; b++) val += bytes[b] * (256 ** b);
+      return val >= GRID_SIZE ? null : val;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // COMPONENTS
@@ -102,15 +232,12 @@ const Timer = ({ seconds }) => {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   const isUrgent = seconds <= 10;
-
   return (
     <div style={{
       fontFamily: "'JetBrains Mono', monospace",
       fontSize: 42, fontWeight: 900,
       color: isUrgent ? T.pink : T.text,
-      textShadow: isUrgent
-        ? "0 0 30px rgba(254,88,123,0.6)"
-        : "0 0 20px rgba(117,75,230,0.3)",
+      textShadow: isUrgent ? "0 0 30px rgba(254,88,123,0.6)" : "0 0 20px rgba(70,125,255,0.3)",
       transition: "color 0.3s, text-shadow 0.3s",
       letterSpacing: "-2px",
       animation: isUrgent ? "pulse 1s ease-in-out infinite" : "none",
@@ -120,7 +247,7 @@ const Timer = ({ seconds }) => {
   );
 };
 
-const Cell = ({ index, players, isSelected, isMine, isWinner, onClick, disabled }) => {
+const Cell = ({ index, players, isMine, isWinner, onClick, disabled }) => {
   const row = Math.floor(index / 5);
   const col = index % 5;
   const hasPlayers = players > 0;
@@ -189,7 +316,7 @@ const Cell = ({ index, players, isSelected, isMine, isWinner, onClick, disabled 
       )}
       {isWinner && (
         <div style={{
-          position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+          position: "absolute", inset: 0,
           background: `radial-gradient(circle, ${T.teal}10 0%, transparent 70%)`,
           animation: "winGlow 2s ease-in-out infinite",
         }} />
@@ -210,122 +337,212 @@ const Cell = ({ index, players, isSelected, isMine, isWinner, onClick, disabled 
   );
 };
 
-const RecentRound = ({ round }) => (
-  <div style={{
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    padding: "10px 14px",
-    background: T.bgCard,
-    border: `1px solid ${T.border}`,
-    borderRadius: 10,
-    marginBottom: 6,
-  }}>
-    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-      <div style={{
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: 11, color: T.textDim,
-      }}>#{round.id}</div>
-      <div style={{
-        width: 20, height: 20, borderRadius: 5,
-        background: `${T.teal}20`,
-        border: `1px solid ${T.teal}40`,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 9, color: T.teal, fontWeight: 700,
-        fontFamily: "'JetBrains Mono', monospace",
-      }}>{round.winningCell}</div>
-    </div>
-    <div style={{
-      fontSize: 12, fontWeight: 700, color: T.teal,
-      fontFamily: "'JetBrains Mono', monospace",
-    }}>{round.pot} OCT</div>
-    <div style={{
-      fontSize: 10, color: T.textDim,
-    }}>{round.players}p</div>
-  </div>
-);
-
 // ═══════════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════
 export default function Page() {
-  const [timeLeft, setTimeLeft] = useState(47);
-  const [roundId, setRoundId] = useState(12);
-  const [cells, setCells] = useState(() => generateMockCells());
+  const [sdkLoaded, setSdkLoaded] = useState(false);
+  const [wallet, setWallet] = useState(null);
+  const [address, setAddress] = useState(null);
+  const [balance, setBalance] = useState(0);
+  const [connecting, setConnecting] = useState(false);
+  const [funding, setFunding] = useState(false);
+  const [claiming, setClaiming] = useState(false);
+
+  // Grid state
+  const [roundId, setRoundId] = useState(0);
+  const [roundEndMs, setRoundEndMs] = useState(0);
+  const [roundResolved, setRoundResolved] = useState(true);
+  const [totalPlayers, setTotalPlayers] = useState(0);
+  const [totalPot, setTotalPot] = useState(0);
+  const [cellCounts, setCellCounts] = useState(Array(25).fill(0));
   const [myCell, setMyCell] = useState(null);
   const [winningCell, setWinningCell] = useState(null);
-  const [totalPot, setTotalPot] = useState(2.4);
-  const [totalPlayers, setTotalPlayers] = useState(8);
-  const [connected, setConnected] = useState(false);
-  const [balance, setBalance] = useState(4.82);
+  const [timeLeft, setTimeLeft] = useState(0);
+  const [totalRounds, setTotalRounds] = useState(0);
+  const [totalVolume, setTotalVolume] = useState(0);
   const [showResult, setShowResult] = useState(false);
-  const [phase, setPhase] = useState("active"); // active | resolving | result
+  const [lastResolvedRound, setLastResolvedRound] = useState(0);
+  const [recentRounds, setRecentRounds] = useState([]);
 
-  // Mock recent rounds
-  const recentRounds = [
-    { id: 11, winningCell: 14, pot: "3.2", players: 12 },
-    { id: 10, winningCell: 7, pot: "1.8", players: 6 },
-    { id: 9, winningCell: 22, pot: "5.1", players: 18 },
-    { id: 8, winningCell: 3, pot: "2.0", players: 8 },
-    { id: 7, winningCell: 19, pot: "4.5", players: 15 },
-  ];
+  const clientRef = useRef(null);
+  const prevRoundRef = useRef(0);
+
+  // Load SDK
+  useEffect(() => {
+    sdkReady.then(() => {
+      setSdkLoaded(true);
+      clientRef.current = new SuiClient({ url: RPC_URL });
+    });
+  }, []);
+
+  // Connect wallet
+  const connectWallet = useCallback(async () => {
+    if (!sdkLoaded) return;
+    setConnecting(true);
+    try {
+      const kp = getOrCreateWallet();
+      const addr = kp.getPublicKey().toSuiAddress();
+      setWallet(kp);
+      setAddress(addr);
+
+      // Check balance
+      const bal = await clientRef.current.getBalance({ owner: addr });
+      const octBalance = Number(bal.totalBalance);
+      setBalance(octBalance);
+
+      // Auto-fund if low
+      if (octBalance < ENTRY_FEE * 2) {
+        setFunding(true);
+        await requestFaucet(addr);
+        // Recheck balance
+        const bal2 = await clientRef.current.getBalance({ owner: addr });
+        setBalance(Number(bal2.totalBalance));
+        setFunding(false);
+      }
+    } catch (e) {
+      console.error("connect error:", e);
+    }
+    setConnecting(false);
+  }, [sdkLoaded]);
+
+  // Poll grid state
+  useEffect(() => {
+    if (!sdkLoaded || !clientRef.current) return;
+
+    const dummySender = "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+    const poll = async () => {
+      const state = await readGridState(clientRef.current);
+      if (!state) return;
+
+      // Detect round change — if previous round was active and now resolved, show result
+      if (prevRoundRef.current === state.currentRoundId && !roundResolved && state.roundResolved) {
+        // Round just resolved — read winning cell from events
+        // For now we detect it from cell counts (the occupied cells)
+        setShowResult(true);
+        setTimeout(() => setShowResult(false), 5000);
+      }
+
+      if (state.currentRoundId !== prevRoundRef.current) {
+        // New round started
+        setMyCell(null);
+        setWinningCell(null);
+        setShowResult(false);
+        prevRoundRef.current = state.currentRoundId;
+      }
+
+      setRoundId(state.currentRoundId);
+      setRoundEndMs(state.roundEndMs);
+      setRoundResolved(state.roundResolved);
+      setTotalPlayers(state.totalPlayers);
+      setTotalPot(state.poolValue);
+      setTotalRounds(state.totalRounds);
+      setTotalVolume(state.totalVolume);
+
+      // Read cell counts
+      const counts = await readCellCounts(clientRef.current, dummySender);
+      setCellCounts(counts);
+
+      // Read player's cell if connected
+      if (address) {
+        const pc = await readPlayerCell(clientRef.current, dummySender, address);
+        setMyCell(pc);
+
+        // Refresh balance
+        try {
+          const bal = await clientRef.current.getBalance({ owner: address });
+          setBalance(Number(bal.totalBalance));
+        } catch {}
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, POLL_INTERVAL);
+    return () => clearInterval(interval);
+  }, [sdkLoaded, address, roundResolved]);
 
   // Countdown timer
   useEffect(() => {
-    const interval = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 0) {
-          // Simulate round resolution
-          setPhase("resolving");
-          setTimeout(() => {
-            const occupiedCells = cells
-              .map((c, i) => (c.players > 0 ? i : -1))
-              .filter((i) => i >= 0);
-            const winner = occupiedCells[Math.floor(Math.random() * occupiedCells.length)];
-            setWinningCell(winner);
-            setPhase("result");
-            setShowResult(true);
-
-            // Start new round after 5s
-            setTimeout(() => {
-              setShowResult(false);
-              setWinningCell(null);
-              setMyCell(null);
-              setCells(generateMockCells());
-              setRoundId((r) => r + 1);
-              setTotalPot(0);
-              setTotalPlayers(0);
-              setPhase("active");
-            }, 5000);
-          }, 2000);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    const tick = () => {
+      const now = Date.now();
+      const remaining = Math.max(0, Math.ceil((roundEndMs - now) / 1000));
+      setTimeLeft(remaining);
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [cells]);
+  }, [roundEndMs]);
 
-  // Reset timer on new round
-  useEffect(() => {
-    if (phase === "active") setTimeLeft(ROUND_DURATION);
-  }, [phase]);
+  // Pick cell transaction
+  const handleCellClick = useCallback(async (cellIndex) => {
+    if (!wallet || !clientRef.current || myCell !== null || roundResolved || timeLeft <= 0 || claiming) return;
+    setClaiming(true);
 
-  const handleCellClick = (index) => {
-    if (myCell !== null || phase !== "active" || timeLeft <= 0) return;
-    if (!connected) {
-      setConnected(true);
-      setBalance(4.82);
+    try {
+      // Get coins
+      const coins = await clientRef.current.getCoins({
+        owner: address,
+        coinType: "0x2::oct::OCT",
+      });
+
+      if (coins.data.length === 0) {
+        alert("No OCT coins. Requesting from faucet...");
+        await requestFaucet(address);
+        setClaiming(false);
+        return;
+      }
+
+      // Pick the largest coin
+      const coin = coins.data.sort((a, b) => Number(b.balance) - Number(a.balance))[0];
+
+      const tx = new Transaction();
+      // Split exact entry fee from coin
+      const [paymentCoin] = tx.splitCoins(tx.object(coin.coinObjectId), [ENTRY_FEE]);
+
+      tx.moveCall({
+        target: `${MODULE}::pick_cell`,
+        arguments: [
+          tx.object(GRID_OBJECT_ID),
+          tx.pure.u64(cellIndex),
+          paymentCoin,
+          tx.object(CLOCK_ID),
+        ],
+      });
+      tx.setGasBudget(10_000_000);
+
+      const result = await clientRef.current.signAndExecuteTransaction({
+        signer: wallet,
+        transaction: tx,
+        options: { showEffects: true, showEvents: true },
+      });
+
+      if (result.effects?.status?.status === "success") {
+        setMyCell(cellIndex);
+        setCellCounts(prev => {
+          const next = [...prev];
+          next[cellIndex] = (next[cellIndex] || 0) + 1;
+          return next;
+        });
+        // Refresh balance
+        const bal = await clientRef.current.getBalance({ owner: address });
+        setBalance(Number(bal.totalBalance));
+      } else {
+        console.error("pick_cell failed:", result.effects?.status);
+        alert("Transaction failed: " + (result.effects?.status?.error || "unknown error"));
+      }
+    } catch (e) {
+      console.error("pick_cell error:", e);
+      alert("Error: " + e.message);
     }
-    setMyCell(index);
-    setCells((prev) => {
-      const next = [...prev];
-      next[index] = { ...next[index], players: next[index].players + 1 };
-      return next;
-    });
-    setTotalPot((p) => +(p + ENTRY_FEE).toFixed(1));
-    setTotalPlayers((p) => p + 1);
-  };
 
-  const totalCellPlayers = cells.reduce((sum, c) => sum + c.players, 0);
+    setClaiming(false);
+  }, [wallet, address, myCell, roundResolved, timeLeft, claiming]);
+
+  const phase = roundResolved ? "waiting" : timeLeft <= 0 ? "resolving" : "active";
+  const potOCT = (totalPot / 1_000_000_000).toFixed(2);
+  const balOCT = (balance / 1_000_000_000).toFixed(2);
+  const volOCT = (totalVolume / 1_000_000_000).toFixed(1);
 
   return (
     <div style={{
@@ -336,7 +553,7 @@ export default function Page() {
       position: "relative",
       overflow: "hidden",
     }}>
-      {/* Background glow effects */}
+      {/* Background glow */}
       <div style={{
         position: "fixed", top: "-20%", left: "-10%",
         width: "50%", height: "50%",
@@ -361,7 +578,7 @@ export default function Page() {
       }}>
         <Logo />
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          {connected && (
+          {address && (
             <div style={{
               fontFamily: "'JetBrains Mono', monospace",
               fontSize: 13, color: T.teal,
@@ -370,23 +587,25 @@ export default function Page() {
               borderRadius: 8,
               border: `1px solid ${T.teal}30`,
             }}>
-              {balance.toFixed(2)} OCT
+              {balOCT} OCT
             </div>
           )}
           <button
-            onClick={() => setConnected(!connected)}
+            onClick={address ? null : connectWallet}
+            disabled={connecting || funding}
             style={{
-              background: connected ? `${T.teal}15` : T.gradient,
-              border: connected ? `1px solid ${T.teal}40` : "none",
+              background: address ? `${T.teal}15` : T.gradient,
+              border: address ? `1px solid ${T.teal}40` : "none",
               borderRadius: 10,
               padding: "8px 18px",
-              color: connected ? T.teal : "#fff",
+              color: address ? T.teal : "#fff",
               fontSize: 13, fontWeight: 600,
-              cursor: "pointer",
+              cursor: address ? "default" : "pointer",
               transition: "all 0.2s",
+              opacity: connecting || funding ? 0.6 : 1,
             }}
           >
-            {connected ? "0x8f...3a2b" : "Play Now"}
+            {connecting ? "Connecting..." : funding ? "Funding..." : address ? `${address.slice(0, 6)}...${address.slice(-4)}` : "Play Now"}
           </button>
         </div>
       </header>
@@ -402,7 +621,7 @@ export default function Page() {
       }}>
         {/* Left — Game Area */}
         <div>
-          {/* Round Info Bar */}
+          {/* Round Info */}
           <div style={{
             display: "flex", alignItems: "center", justifyContent: "space-between",
             marginBottom: 20,
@@ -417,11 +636,15 @@ export default function Page() {
               }}>
                 Round #{roundId}
               </div>
-              <div style={{
-                fontSize: 12, color: T.textDim,
-              }}>
-                {phase === "resolving" ? "Resolving..." : phase === "result" ? "Round Complete" : `${totalPlayers} players`}
+              <div style={{ fontSize: 12, color: T.textDim }}>
+                {phase === "resolving" ? "Resolving..." : phase === "waiting" ? "Starting next round..." : `${totalPlayers} players`}
               </div>
+            </div>
+            <div style={{
+              fontSize: 11, color: T.textMuted,
+              fontFamily: "'JetBrains Mono', monospace",
+            }}>
+              {totalRounds} rounds · {volOCT} OCT vol
             </div>
           </div>
 
@@ -436,16 +659,14 @@ export default function Page() {
           }}>
             <div>
               <div style={{ fontSize: 10, color: T.textDim, letterSpacing: "2px", textTransform: "uppercase", marginBottom: 4 }}>
-                {phase === "active" ? "Time Remaining" : phase === "resolving" ? "Picking Winner..." : "Winner Found!"}
+                {phase === "active" ? "Time Remaining" : phase === "resolving" ? "Picking Winner..." : "Next Round Soon"}
               </div>
               {phase === "resolving" ? (
                 <div style={{
                   fontSize: 42, fontWeight: 900,
                   background: T.gradient, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
                   animation: "pulse 1s ease-in-out infinite",
-                }}>
-                  ···
-                </div>
+                }}>···</div>
               ) : (
                 <Timer seconds={timeLeft} />
               )}
@@ -460,7 +681,7 @@ export default function Page() {
                 color: T.teal,
                 textShadow: `0 0 30px ${T.teal}30`,
               }}>
-                {totalPot.toFixed(1)} <span style={{ fontSize: 16, color: T.textDim }}>OCT</span>
+                {potOCT} <span style={{ fontSize: 16, color: T.textDim }}>OCT</span>
               </div>
             </div>
           </div>
@@ -476,24 +697,41 @@ export default function Page() {
             borderRadius: 16,
             position: "relative",
           }}>
-            {cells.map((cell, i) => (
+            {cellCounts.map((count, i) => (
               <Cell
                 key={i}
                 index={i}
-                players={cell.players}
-                isSelected={false}
+                players={count}
                 isMine={myCell === i}
                 isWinner={winningCell === i}
                 onClick={handleCellClick}
-                disabled={myCell !== null || phase !== "active" || timeLeft <= 0}
+                disabled={!address || myCell !== null || phase !== "active" || timeLeft <= 0 || claiming}
               />
             ))}
 
-            {/* Result overlay */}
-            {showResult && winningCell !== null && (
+            {/* Claiming overlay */}
+            {claiming && (
               <div style={{
                 position: "absolute", inset: 0,
-                background: "rgba(2,10,24,0.85)",
+                background: "rgba(3,15,28,0.7)",
+                backdropFilter: "blur(2px)",
+                borderRadius: 16,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                zIndex: 10,
+              }}>
+                <div style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 14, color: T.lavender,
+                  animation: "pulse 1s ease-in-out infinite",
+                }}>Claiming cell...</div>
+              </div>
+            )}
+
+            {/* Result overlay */}
+            {showResult && (
+              <div style={{
+                position: "absolute", inset: 0,
+                background: "rgba(3,15,28,0.85)",
                 backdropFilter: "blur(4px)",
                 borderRadius: 16,
                 display: "flex", flexDirection: "column",
@@ -504,57 +742,44 @@ export default function Page() {
                 <div style={{
                   fontSize: 11, color: T.textDim, letterSpacing: "3px",
                   textTransform: "uppercase", marginBottom: 8,
-                }}>Winning Cell</div>
+                }}>Round Resolved</div>
                 <div style={{
                   fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 56, fontWeight: 900,
-                  background: T.gradientTeal,
-                  WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
-                  textShadow: "none",
+                  fontSize: 20, fontWeight: 700,
+                  color: T.teal,
                 }}>
-                  {Math.floor(winningCell / 5)},{winningCell % 5}
-                </div>
-                <div style={{
-                  marginTop: 12,
-                  padding: "6px 16px",
-                  borderRadius: 8,
-                  background: myCell === winningCell ? `${T.teal}20` : `${T.pink}20`,
-                  border: `1px solid ${myCell === winningCell ? T.teal : T.pink}40`,
-                  color: myCell === winningCell ? T.teal : T.pink,
-                  fontSize: 14, fontWeight: 700,
-                }}>
-                  {myCell === null
-                    ? "You didn't play"
-                    : myCell === winningCell
-                    ? `YOU WON ${totalPot.toFixed(1)} OCT!`
-                    : "Better luck next round"}
+                  Winners paid automatically!
                 </div>
               </div>
             )}
           </div>
 
-          {/* Entry fee notice */}
+          {/* Status message */}
           <div style={{
             textAlign: "center", marginTop: 12,
             fontSize: 11, color: T.textDim,
           }}>
-            {phase === "active" && myCell === null
-              ? `Click a cell to enter · ${ENTRY_FEE} OCT per cell`
+            {!address
+              ? 'Click "Play Now" to get a burner wallet + free testnet OCT'
+              : phase === "active" && myCell === null && !claiming
+              ? `Click a cell to enter · 0.1 OCT per cell`
               : myCell !== null
-              ? `You picked cell (${Math.floor(myCell / 5)},${myCell % 5})`
-              : ""}
+              ? `You picked cell (${Math.floor(myCell / 5)},${myCell % 5}) — waiting for round to end`
+              : phase === "resolving"
+              ? "Resolver bot is picking the winner..."
+              : "Next round starting soon..."}
           </div>
         </div>
 
         {/* Right Sidebar */}
         <div>
-          {/* Stats Grid */}
+          {/* Stats */}
           <div style={{
             display: "grid", gridTemplateColumns: "1fr 1fr",
             gap: 8, marginBottom: 20,
           }}>
-            <StatPill label="Entry Fee" value={`${ENTRY_FEE} OCT`} color={T.blue} icon="◆" />
-            <StatPill label="Round" value={`${ROUND_DURATION}s`} color={T.lavender} icon="◷" />
+            <StatPill label="Entry Fee" value="0.1 OCT" color={T.blue} icon="◆" />
+            <StatPill label="Round" value="60s" color={T.lavender} icon="◷" />
             <StatPill label="Players" value={totalPlayers} color={T.teal} icon="◉" />
             <StatPill label="Fee" value="5%" color={T.pink} icon="%" />
           </div>
@@ -571,10 +796,10 @@ export default function Page() {
               textTransform: "uppercase", marginBottom: 14,
             }}>How It Works</div>
             {[
-              { step: "01", text: "Pick any cell on the 5×5 grid", color: T.blue },
-              { step: "02", text: "Pay 0.1 OCT entry fee", color: T.blue },
+              { step: "01", text: "Click 'Play Now' — instant burner wallet + free OCT", color: T.blue },
+              { step: "02", text: "Pick any cell on the 5×5 grid (0.1 OCT)", color: T.blue },
               { step: "03", text: "Wait for the 60s round to end", color: T.lavender },
-              { step: "04", text: "Random occupied cell wins the pot", color: T.teal },
+              { step: "04", text: "Random occupied cell wins — pot auto-paid!", color: T.teal },
             ].map((item) => (
               <div key={item.step} style={{
                 display: "flex", alignItems: "flex-start", gap: 10,
@@ -593,7 +818,7 @@ export default function Page() {
             ))}
           </div>
 
-          {/* Recent Rounds */}
+          {/* Contract Info */}
           <div style={{
             background: T.bgCard,
             border: `1px solid ${T.border}`,
@@ -602,14 +827,17 @@ export default function Page() {
             <div style={{
               fontSize: 11, color: T.textDim, letterSpacing: "2px",
               textTransform: "uppercase", marginBottom: 14,
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-            }}>
-              <span>Recent Rounds</span>
-              <span style={{ fontSize: 9, color: T.textMuted }}>CELL · POT · PLAYERS</span>
+            }}>Contract</div>
+            <div style={{ fontSize: 11, color: T.textMuted, fontFamily: "'JetBrains Mono', monospace", wordBreak: "break-all", lineHeight: 1.6 }}>
+              <div style={{ color: T.textDim, marginBottom: 4 }}>Package</div>
+              <a href={`https://onescan.cc/testnet/object/${PACKAGE_ID}`} target="_blank" rel="noopener" style={{ color: T.blue, textDecoration: "none" }}>
+                {PACKAGE_ID.slice(0, 16)}...{PACKAGE_ID.slice(-8)}
+              </a>
+              <div style={{ color: T.textDim, marginBottom: 4, marginTop: 10 }}>Grid Object</div>
+              <a href={`https://onescan.cc/testnet/object/${GRID_OBJECT_ID}`} target="_blank" rel="noopener" style={{ color: T.blue, textDecoration: "none" }}>
+                {GRID_OBJECT_ID.slice(0, 16)}...{GRID_OBJECT_ID.slice(-8)}
+              </a>
             </div>
-            {recentRounds.map((round) => (
-              <RecentRound key={round.id} round={round} />
-            ))}
           </div>
 
           {/* OneChain badge */}
@@ -624,7 +852,7 @@ export default function Page() {
               Built on <span style={{ color: T.blue, fontWeight: 600 }}>OneChain</span> · Move Smart Contracts
             </div>
             <div style={{ fontSize: 9, color: T.textMuted, marginTop: 2 }}>
-              onescan.cc · Testnet
+              Testnet · onescan.cc
             </div>
           </div>
         </div>
@@ -632,43 +860,17 @@ export default function Page() {
 
       {/* Global Styles */}
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap');
-        
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        
-        body { 
-          background: ${T.bg}; 
-          margin: 0;
-          -webkit-font-smoothing: antialiased;
-        }
-        
+        body { -webkit-font-smoothing: antialiased; }
         button { font-family: inherit; }
-        
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.6; }
-        }
-        
-        @keyframes fadeIn {
-          from { opacity: 0; transform: scale(0.95); }
-          to { opacity: 1; transform: scale(1); }
-        }
-        
-        @keyframes winGlow {
-          0%, 100% { opacity: 0.3; }
-          50% { opacity: 0.8; }
-        }
-
-        /* Scrollbar */
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+        @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+        @keyframes winGlow { 0%, 100% { opacity: 0.3; } 50% { opacity: 0.8; } }
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: ${T.bg}; }
         ::-webkit-scrollbar-thumb { background: ${T.border}; border-radius: 3px; }
-        
-        /* Mobile responsive */
         @media (max-width: 800px) {
-          div[style*="gridTemplateColumns: 1fr 380px"] {
-            grid-template-columns: 1fr !important;
-          }
+          div[style*="gridTemplateColumns: 1fr 380px"] { grid-template-columns: 1fr !important; }
         }
       `}</style>
     </div>
