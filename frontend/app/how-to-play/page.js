@@ -215,7 +215,7 @@ export default function HowToPlay() {
             transition: "all 0.2s",
           }}>Start Playing</a>
           <div style={{ fontSize: 12, color: T.textMuted, marginTop: 12 }}>
-            Free testnet OCT • No deposit required • Instant gameplay
+            Free testnet OCT - No deposit required - Instant gameplay
           </div>
         </div>
       </div>
@@ -225,7 +225,7 @@ export default function HowToPlay() {
         borderTop: `1px solid ${T.border}`, padding: "20px 24px",
         textAlign: "center", fontSize: 11, color: T.textMuted,
       }}>
-        Built on <span style={{ color: T.blue, fontWeight: 600 }}>OneChain</span> · <a href="https://github.com/penguinpecker/onegrid" target="_blank" rel="noopener" style={{ color: T.blue, textDecoration: "none" }}>GitHub</a> · <a href="https://onescan.cc/testnet" target="_blank" rel="noopener" style={{ color: T.blue, textDecoration: "none" }}>Explorer</a>
+        Built on <span style={{ color: T.blue, fontWeight: 600 }}>OneChain</span> - <a href="https://github.com/penguinpecker/onegrid" target="_blank" rel="noopener" style={{ color: T.blue, textDecoration: "none" }}>GitHub</a> - <a href="https://onescan.cc/testnet" target="_blank" rel="noopener" style={{ color: T.blue, textDecoration: "none" }}>Explorer</a>
       </div>
 
       <style>{`
