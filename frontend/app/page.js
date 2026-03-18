@@ -153,7 +153,7 @@ async function fetchRecentEvents(client) {
         roundId: Number(p.round_id),
         winningCell: Number(p.winning_cell),
         totalPot: Number(p.total_pot || 0),
-        winner: paidEv?.parsedJson?.player || null,
+        winner: paidEv?.parsedJson?.winner || null,
         payout: Number(paidEv?.parsedJson?.amount || 0),
         txDigest: ev.id?.txDigest || null,
         timestamp: ev.timestampMs ? Number(ev.timestampMs) : Date.now(),
@@ -469,7 +469,18 @@ export default function Page() {
         background: `${T.bg}ee`, backdropFilter: "blur(12px)",
         position: "sticky", top: 0, zIndex: 100,
       }}>
-        <Logo />
+        <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
+          <Logo />
+          <a href="/how-to-play" style={{
+            fontSize: 12, color: T.textDim, textDecoration: "none",
+            fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.5px",
+            padding: "6px 12px", borderRadius: 8,
+            border: `1px solid ${T.border}`, transition: "all 0.2s",
+          }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = T.blue; e.currentTarget.style.color = T.blue; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.textDim; }}
+          >How to Play</a>
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           {address && (
             <div style={{
