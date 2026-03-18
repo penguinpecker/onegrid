@@ -134,27 +134,37 @@ async function readPlayerCell(client, sender, playerAddress) {
 
 async function fetchRecentEvents(client) {
   try {
-    const resolved = await client.queryEvents({
-      query: { MoveEventType: `${MODULE}::RoundResolved` },
-      order: "descending",
-      limit: MAX_HISTORY,
-    });
+    // Use WinningsPaid as primary — it has player address
     const paid = await client.queryEvents({
       query: { MoveEventType: `${MODULE}::WinningsPaid` },
       order: "descending",
       limit: MAX_HISTORY,
     });
 
-    const rounds = [];
-    for (const ev of resolved.data) {
+    // Get RoundResolved for winning cell info
+    const resolved = await client.queryEvents({
+      query: { MoveEventType: `${MODULE}::RoundResolved` },
+      order: "descending",
+      limit: MAX_HISTORY,
+    });
+
+    // Build lookup map: round_id -> RoundResolved data
+    const resolvedMap = {};
+    for (const ev of (resolved.data || [])) {
       const p = ev.parsedJson;
-      const paidEv = paid.data.find(pe => pe.parsedJson?.round_id === p.round_id);
+      resolvedMap[p.round_id] = p;
+    }
+
+    const rounds = [];
+    for (const ev of (paid.data || [])) {
+      const p = ev.parsedJson;
+      const res = resolvedMap[p.round_id] || {};
       rounds.push({
         roundId: Number(p.round_id),
-        winningCell: Number(p.winning_cell),
-        totalPot: Number(p.total_pot || 0),
-        winner: paidEv?.parsedJson?.winner || null,
-        payout: Number(paidEv?.parsedJson?.amount || 0),
+        winningCell: Number(res.winning_cell || 0),
+        totalPot: Number(res.total_pot || 0),
+        winner: p.player || null,
+        payout: Number(p.amount || 0),
         txDigest: ev.id?.txDigest || null,
         timestamp: ev.timestampMs ? Number(ev.timestampMs) : Date.now(),
       });
