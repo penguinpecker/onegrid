@@ -95,7 +95,7 @@ export default function HowToPlay() {
             Claim Cells. Win OCT. Earn <span style={{ color: T.teal }}>$GRID</span>.
           </h1>
           <p style={{ fontSize: 16, color: T.textDim, maxWidth: 500, margin: "0 auto", lineHeight: 1.7 }}>
-            OneGrid is a 5×5 on-chain grid game on OneChain. Every 60 seconds, a random cell wins. All players on the winning cell split the pot.
+            OneGrid is a 5x5 on-chain grid game on OneChain. Every 60 seconds, a random cell wins. All players on the winning cell split the pot.
           </p>
         </div>
 
@@ -115,7 +115,7 @@ export default function HowToPlay() {
           <Step number="01" icon="🔗" title="Connect OneWallet"
             description='Click "Play Now" on the game page. OneWallet - OneChain\'s native browser wallet - will prompt you to connect. Your OCT balance loads instantly. New to OneChain? Download OneWallet from one-wallet.cc and get free testnet OCT from the faucet.' />
           <Step number="02" icon="🎯" title="Pick a Cell"
-            description="Choose any cell on the 5×5 grid. Each cell costs 0.1 OCT to claim. You can only pick one cell per round. OneWallet will ask you to approve the transaction - your OCT goes directly into the round's prize pool on-chain." />
+            description="Choose any cell on the 5x5 grid. Each cell costs 0.1 OCT to claim. You can only pick one cell per round. OneWallet will ask you to approve the transaction - your OCT goes directly into the round's prize pool on-chain." />
           <Step number="03" icon="⏱" title="Wait for the Round to End"
             description="Each round lasts exactly 60 seconds. Watch the countdown timer. Other players can join the same round and pick their cells. The more players, the bigger the pot. Multiple players can pick the same cell." />
           <Step number="04" icon="🎲" title="Random Winner Selection"
