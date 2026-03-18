@@ -112,17 +112,17 @@ export default function HowToPlay() {
           background: T.bgCard, border: `1px solid ${T.border}`, borderRadius: 18,
           padding: "8px 32px", marginBottom: 48,
         }}>
-          <Step number="01" icon="🔗" title="Connect OneWallet"
+          <Step number="01" icon="01" title="Connect OneWallet"
             description='Click "Play Now" on the game page. OneWallet - OneChain\'s native browser wallet - will prompt you to connect. Your OCT balance loads instantly. New to OneChain? Download OneWallet from one-wallet.cc and get free testnet OCT from the faucet.' />
-          <Step number="02" icon="🎯" title="Pick a Cell"
+          <Step number="02" icon="02" title="Pick a Cell"
             description="Choose any cell on the 5x5 grid. Each cell costs 0.1 OCT to claim. You can only pick one cell per round. OneWallet will ask you to approve the transaction - your OCT goes directly into the round's prize pool on-chain." />
-          <Step number="03" icon="⏱" title="Wait for the Round to End"
+          <Step number="03" icon="03" title="Wait for the Round to End"
             description="Each round lasts exactly 60 seconds. Watch the countdown timer. Other players can join the same round and pick their cells. The more players, the bigger the pot. Multiple players can pick the same cell." />
-          <Step number="04" icon="🎲" title="Random Winner Selection"
+          <Step number="04" icon="04" title="Random Winner Selection"
             description="When the timer hits zero, our autonomous resolver bot picks the winning cell. The selection uses the transaction digest as a pseudorandom seed - it's on-chain, verifiable, and can't be predicted or manipulated by any player." />
-          <Step number="05" icon="💰" title="Collect Winnings"
+          <Step number="05" icon="05" title="Collect Winnings"
             description="Winners receive 95% of the prize pool in OCT automatically - no claim button needed. The smart contract pays you directly to your wallet. 5% goes to the protocol treasury. If multiple players picked the winning cell, they split the payout equally." />
-          <Step number="06" icon="🏆" title="Earn $GRID Tokens"
+          <Step number="06" icon="06" title="Earn $GRID Tokens"
             description="Every winner also receives 10 $GRID - OneGrid's native reward token. GRID is minted on-chain by the resolver bot after each round resolution. You can view your GRID balance in OneWallet by adding the custom token." />
         </div>
 
